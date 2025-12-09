@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Markdown, Static
@@ -63,9 +65,24 @@ class AssistantMessage(Static):
         if not content:
             return
 
+        # Prevent duplicate content
+        if self._content.endswith(content):
+            return
+
+        # Safety limit: 1MB max content
+        MAX_CONTENT_LENGTH = 1_000_000
+        if len(self._content) + len(content) > MAX_CONTENT_LENGTH:
+            return
+
         self._content += content
         stream = self._ensure_stream()
-        await stream.write(content)
+        
+        try:
+            async with asyncio.timeout(5):
+                await stream.write(content)
+        except asyncio.TimeoutError:
+            # Rollback on timeout
+            self._content = self._content[:-len(content)]
 
     async def write_initial_content(self) -> None:
         if self._content:
