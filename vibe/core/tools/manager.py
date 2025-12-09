@@ -144,31 +144,38 @@ class ToolManager:
         run_sync(self._integrate_mcp_async())
 
     async def _integrate_mcp_async(self) -> None:
+        import asyncio
+        
+        if not self._config.mcp_servers:
+            return
+            
+        logger.info("Loading %d MCP servers...", len(self._config.mcp_servers))
+        
+        # Load servers in parallel with timeout
+        tasks = []
+        for srv in self._config.mcp_servers:
+            task = asyncio.create_task(self._load_server_with_timeout(srv))
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
         http_count = 0
         stdio_count = 0
         failed_servers = []
-
-        for srv in self._config.mcp_servers:
-            try:
-                match srv.transport:
-                    case "http" | "streamable-http":
-                        count = await self._register_http_server(srv)
-                        if count > 0:
-                            http_count += count
-                        else:
-                            failed_servers.append(srv.name)
-                    case "stdio":
-                        count = await self._register_stdio_server(srv)
-                        if count > 0:
-                            stdio_count += count
-                        else:
-                            failed_servers.append(srv.name)
-                    case _:
-                        logger.debug("Unsupported MCP transport: %r", srv.transport)
-                        failed_servers.append(srv.name)
-            except Exception as exc:
-                logger.debug("MCP server '%s' failed: %s", srv.name, exc)
+        
+        for srv, result in zip(self._config.mcp_servers, results):
+            if isinstance(result, Exception):
+                logger.debug("MCP server '%s' failed: %s", srv.name, result)
                 failed_servers.append(srv.name)
+            elif isinstance(result, tuple):
+                count, transport = result
+                if count > 0:
+                    if transport == "http":
+                        http_count += count
+                    else:
+                        stdio_count += count
+                else:
+                    failed_servers.append(srv.name)
 
         if http_count + stdio_count > 0:
             logger.info(
@@ -180,6 +187,29 @@ class ToolManager:
         
         if failed_servers:
             logger.debug("MCP servers not loaded: %s", ", ".join(failed_servers))
+    
+    async def _load_server_with_timeout(self, srv) -> tuple[int, str]:
+        """Load a single MCP server with 10s timeout"""
+        import asyncio
+        
+        try:
+            async with asyncio.timeout(10):
+                match srv.transport:
+                    case "http" | "streamable-http":
+                        count = await self._register_http_server(srv)
+                        return (count, "http")
+                    case "stdio":
+                        count = await self._register_stdio_server(srv)
+                        return (count, "stdio")
+                    case _:
+                        logger.debug("Unsupported MCP transport: %r", srv.transport)
+                        return (0, "unknown")
+        except asyncio.TimeoutError:
+            logger.debug("MCP server '%s' timed out after 10s", srv.name)
+            return (0, "timeout")
+        except Exception as exc:
+            logger.debug("MCP server '%s' failed: %s", srv.name, exc)
+            raise
 
     async def _register_http_server(self, srv: MCPHttp | MCPStreamableHttp) -> int:
         url = (srv.url or "").strip()
