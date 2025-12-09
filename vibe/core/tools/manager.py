@@ -144,39 +144,54 @@ class ToolManager:
         run_sync(self._integrate_mcp_async())
 
     async def _integrate_mcp_async(self) -> None:
-        try:
-            http_count = 0
-            stdio_count = 0
+        http_count = 0
+        stdio_count = 0
+        failed_servers = []
 
-            for srv in self._config.mcp_servers:
+        for srv in self._config.mcp_servers:
+            try:
                 match srv.transport:
                     case "http" | "streamable-http":
-                        http_count += await self._register_http_server(srv)
+                        count = await self._register_http_server(srv)
+                        if count > 0:
+                            http_count += count
+                        else:
+                            failed_servers.append(srv.name)
                     case "stdio":
-                        stdio_count += await self._register_stdio_server(srv)
+                        count = await self._register_stdio_server(srv)
+                        if count > 0:
+                            stdio_count += count
+                        else:
+                            failed_servers.append(srv.name)
                     case _:
-                        logger.warning("Unsupported MCP transport: %r", srv.transport)
+                        logger.debug("Unsupported MCP transport: %r", srv.transport)
+                        failed_servers.append(srv.name)
+            except Exception as exc:
+                logger.debug("MCP server '%s' failed: %s", srv.name, exc)
+                failed_servers.append(srv.name)
 
+        if http_count + stdio_count > 0:
             logger.info(
                 "MCP integration registered %d tools (http=%d, stdio=%d)",
                 http_count + stdio_count,
                 http_count,
                 stdio_count,
             )
-        except Exception as exc:
-            logger.warning("Failed to integrate MCP tools: %s", exc)
+        
+        if failed_servers:
+            logger.debug("MCP servers not loaded: %s", ", ".join(failed_servers))
 
     async def _register_http_server(self, srv: MCPHttp | MCPStreamableHttp) -> int:
         url = (srv.url or "").strip()
         if not url:
-            logger.warning("MCP server '%s' missing url for http transport", srv.name)
+            logger.debug("MCP server '%s' missing url for http transport", srv.name)
             return 0
 
         headers = srv.http_headers()
         try:
             tools: list[RemoteTool] = await list_tools_http(url, headers=headers)
         except Exception as exc:
-            logger.warning("MCP HTTP discovery failed for %s: %s", url, exc)
+            logger.debug("MCP HTTP discovery failed for %s: %s", url, exc)
             return 0
 
         added = 0
@@ -192,7 +207,7 @@ class ToolManager:
                 self._available[proxy_cls.get_name()] = proxy_cls
                 added += 1
             except Exception as exc:
-                logger.warning(
+                logger.debug(
                     "Failed to register MCP HTTP tool '%s' from %s: %r",
                     getattr(remote, "name", "<unknown>"),
                     url,
@@ -203,13 +218,13 @@ class ToolManager:
     async def _register_stdio_server(self, srv: MCPStdio) -> int:
         cmd = srv.argv()
         if not cmd:
-            logger.warning("MCP stdio server '%s' has invalid/empty command", srv.name)
+            logger.debug("MCP stdio server '%s' has invalid/empty command", srv.name)
             return 0
 
         try:
             tools: list[RemoteTool] = await list_tools_stdio(cmd)
         except Exception as exc:
-            logger.warning("MCP stdio discovery failed for %r: %s", cmd, exc)
+            logger.debug("MCP stdio discovery failed for %r: %s", cmd, exc)
             return 0
 
         added = 0
@@ -221,7 +236,7 @@ class ToolManager:
                 self._available[proxy_cls.get_name()] = proxy_cls
                 added += 1
             except Exception as exc:
-                logger.warning(
+                logger.debug(
                     "Failed to register MCP stdio tool '%s' from %r: %r",
                     getattr(remote, "name", "<unknown>"),
                     cmd,
