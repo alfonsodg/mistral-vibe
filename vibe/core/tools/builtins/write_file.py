@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import ClassVar, final
 
 import aiofiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -40,6 +41,7 @@ class WriteFileConfig(BaseToolConfig):
 
 class WriteFileState(BaseToolState):
     recently_written_files: list[str] = Field(default_factory=list)
+    _lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 
 
 class WriteFile(
@@ -114,9 +116,10 @@ class WriteFile(
         await self._write_file(args, file_path)
 
         BUFFER_SIZE = 10
-        self.state.recently_written_files.append(str(file_path))
-        if len(self.state.recently_written_files) > BUFFER_SIZE:
-            self.state.recently_written_files.pop(0)
+        async with self.state._lock:
+            self.state.recently_written_files.append(str(file_path))
+            if len(self.state.recently_written_files) > BUFFER_SIZE:
+                self.state.recently_written_files.pop(0)
 
         return WriteFileResult(
             path=str(file_path),

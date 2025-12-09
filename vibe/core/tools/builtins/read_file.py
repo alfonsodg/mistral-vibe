@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, NamedTuple, final
 
 import aiofiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -58,6 +59,7 @@ class ReadFileToolConfig(BaseToolConfig):
 
 class ReadFileState(BaseToolState):
     recently_read_files: list[str] = Field(default_factory=list)
+    _lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 
 
 class ReadFile(
@@ -75,7 +77,7 @@ class ReadFile(
 
         read_result = await self._read_file(args, file_path)
 
-        self._update_state_history(file_path)
+        await self._update_state_history(file_path)
 
         return ReadFileResult(
             path=str(file_path),
@@ -181,10 +183,11 @@ class ReadFile(
         if resolved_path.is_dir():
             raise ToolError(f"Path is a directory, not a file: {file_path}")
 
-    def _update_state_history(self, file_path: Path) -> None:
-        self.state.recently_read_files.append(str(file_path.resolve()))
-        if len(self.state.recently_read_files) > self.config.max_state_history:
-            self.state.recently_read_files.pop(0)
+    async def _update_state_history(self, file_path: Path) -> None:
+        async with self.state._lock:
+            self.state.recently_read_files.append(str(file_path.resolve()))
+            if len(self.state.recently_read_files) > self.config.max_state_history:
+                self.state.recently_read_files.pop(0)
 
     @classmethod
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:
